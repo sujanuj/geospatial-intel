@@ -59,38 +59,41 @@ class GeoObject:
         return d
 
 
-# Starting positions for different object types
+# Starting positions for different object types.
+# Each tuple is (lat, lon, region_label, country) — country matches the
+# actual real-world location so the UI's country field is consistent with
+# where the object actually is, instead of being assigned independently.
 SHIP_STARTS = [
-    (37.7749, -122.4194, "Pacific Ocean"),   # San Francisco coast
-    (40.6892, -74.0445, "Atlantic Ocean"),   # New York harbor
-    (51.5074, -0.1278, "English Channel"),   # London area
-    (35.6762, 139.6503, "Pacific"),          # Tokyo bay
-    (1.3521, 103.8198, "Singapore Strait"),  # Singapore
-    (25.2048, 55.2708, "Persian Gulf"),      # Dubai
-    (-33.8688, 151.2093, "Tasman Sea"),      # Sydney
-    (48.8566, 2.3522, "Atlantic"),           # Paris/Le Havre
+    (37.7749, -122.4194, "Pacific Ocean", "USA"),        # San Francisco coast
+    (40.6892, -74.0445, "Atlantic Ocean", "USA"),        # New York harbor
+    (51.5074, -0.1278, "English Channel", "UK"),         # London area
+    (35.6762, 139.6503, "Pacific", "Japan"),              # Tokyo bay
+    (1.3521, 103.8198, "Singapore Strait", "Singapore"), # Singapore
+    (25.2048, 55.2708, "Persian Gulf", "UAE"),            # Dubai
+    (-33.8688, 151.2093, "Tasman Sea", "Australia"),      # Sydney
+    (48.8566, 2.3522, "Atlantic", "France"),              # Paris/Le Havre
 ]
 
 AIRCRAFT_STARTS = [
-    (40.7128, -74.0060, "North America"),
-    (51.5074, -0.1278, "Europe"),
-    (35.6762, 139.6503, "Asia Pacific"),
-    (25.2048, 55.2708, "Middle East"),
-    (-23.5505, -46.6333, "South America"),
-    (19.0760, 72.8777, "South Asia"),
-    (55.7558, 37.6173, "Eastern Europe"),
-    (30.0444, 31.2357, "North Africa"),
+    (40.7128, -74.0060, "North America", "USA"),
+    (51.5074, -0.1278, "Europe", "UK"),
+    (35.6762, 139.6503, "Asia Pacific", "Japan"),
+    (25.2048, 55.2708, "Middle East", "UAE"),
+    (-23.5505, -46.6333, "South America", "Brazil"),
+    (19.0760, 72.8777, "South Asia", "India"),
+    (55.7558, 37.6173, "Eastern Europe", "Russia"),
+    (30.0444, 31.2357, "North Africa", "Egypt"),
 ]
 
 VEHICLE_STARTS = [
-    (37.3861, -122.0839, "Silicon Valley"),
-    (40.7128, -74.0060, "New York"),
-    (51.5074, -0.1278, "London"),
-    (48.8566, 2.3522, "Paris"),
-    (52.5200, 13.4050, "Berlin"),
-    (35.6762, 139.6503, "Tokyo"),
-    (28.6139, 77.2090, "Delhi"),
-    (39.9042, 116.4074, "Beijing"),
+    (37.3861, -122.0839, "Silicon Valley", "USA"),
+    (40.7128, -74.0060, "New York", "USA"),
+    (51.5074, -0.1278, "London", "UK"),
+    (48.8566, 2.3522, "Paris", "France"),
+    (52.5200, 13.4050, "Berlin", "Germany"),
+    (35.6762, 139.6503, "Tokyo", "Japan"),
+    (28.6139, 77.2090, "Delhi", "India"),
+    (39.9042, 116.4074, "Beijing", "China"),
 ]
 
 SHIP_NAMES = [
@@ -113,12 +116,6 @@ VEHICLE_NAMES = [
     "Unit-Golf-4", "Patrol-Hotel-6", "Unit-India-8",
     "Convoy-Juliet-1", "Unit-Kilo-11", "Patrol-Lima-3",
 ]
-
-COUNTRIES = [
-    "USA", "UK", "Germany", "France", "Japan",
-    "Australia", "Canada", "Singapore", "UAE", "India",
-]
-
 
 def random_status() -> ObjectStatus:
     r = random.random()
@@ -182,7 +179,7 @@ class ObjectSimulator:
     def _create_objects(self, n_ships: int, n_aircraft: int, n_vehicles: int):
         # Ships
         for i in range(n_ships):
-            lat, lon, _ = random.choice(SHIP_STARTS)
+            lat, lon, _, country = random.choice(SHIP_STARTS)
             obj_id = str(uuid.uuid4())[:8]
             self.objects[obj_id] = GeoObject(
                 id=obj_id,
@@ -194,12 +191,12 @@ class ObjectSimulator:
                 speed=random.uniform(5, 20),
                 status=random_status(),
                 altitude=0,
-                country=random.choice(COUNTRIES),
+                country=country,
             )
 
         # Aircraft
         for i in range(n_aircraft):
-            lat, lon, _ = random.choice(AIRCRAFT_STARTS)
+            lat, lon, _, country = random.choice(AIRCRAFT_STARTS)
             obj_id = str(uuid.uuid4())[:8]
             self.objects[obj_id] = GeoObject(
                 id=obj_id,
@@ -211,12 +208,12 @@ class ObjectSimulator:
                 speed=random.uniform(400, 600),
                 status=random_status(),
                 altitude=random.uniform(10000, 45000),
-                country=random.choice(COUNTRIES),
+                country=country,
             )
 
         # Vehicles
         for i in range(n_vehicles):
-            lat, lon, _ = random.choice(VEHICLE_STARTS)
+            lat, lon, _, country = random.choice(VEHICLE_STARTS)
             obj_id = str(uuid.uuid4())[:8]
             self.objects[obj_id] = GeoObject(
                 id=obj_id,
@@ -228,7 +225,7 @@ class ObjectSimulator:
                 speed=random.uniform(30, 80),
                 status=random_status(),
                 altitude=0,
-                country=random.choice(COUNTRIES),
+                country=country,
             )
 
     def update(self, dt: float = 1.0):
