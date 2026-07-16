@@ -24,6 +24,8 @@ from dataclasses import dataclass, field, asdict
 from typing import List, Dict, Optional
 from enum import Enum
 
+import reverse_geocoder as rg
+
 
 class ObjectType(str, Enum):
     SHIP = "ship"
@@ -35,6 +37,30 @@ class ObjectStatus(str, Enum):
     ACTIVE = "active"
     WARNING = "warning"
     THREAT = "threat"
+
+
+# reverse_geocoder returns ISO 3166-1 alpha-2 codes (e.g. "US", "GB"), not
+# display names. This maps the codes we're likely to see to a friendlier
+# label; anything not in the map falls back to the raw code, so nothing is
+# ever silently dropped.
+COUNTRY_CODE_NAMES = {
+    "US": "USA", "GB": "UK", "JP": "Japan", "SG": "Singapore",
+    "AE": "UAE", "AU": "Australia", "FR": "France", "DE": "Germany",
+    "IN": "India", "CN": "China", "BR": "Brazil", "RU": "Russia",
+    "EG": "Egypt", "CA": "Canada", "ID": "Indonesia", "MX": "Mexico",
+    "ZA": "South Africa", "SA": "Saudi Arabia", "IT": "Italy",
+    "ES": "Spain", "KR": "South Korea", "TH": "Thailand",
+    "MY": "Malaysia", "PH": "Philippines", "VN": "Vietnam",
+    "AR": "Argentina", "CL": "Chile", "NZ": "New Zealand",
+    "NO": "Norway", "SE": "Sweden", "FI": "Finland", "PT": "Portugal",
+    "NL": "Netherlands", "TR": "Turkey", "GR": "Greece", "PK": "Pakistan",
+    "IR": "Iran", "IQ": "Iraq", "KE": "Kenya", "NG": "Nigeria",
+    "PE": "Peru", "CO": "Colombia", "PL": "Poland", "UA": "Ukraine",
+}
+
+
+def _country_name(cc: str) -> str:
+    return COUNTRY_CODE_NAMES.get(cc, cc)
 
 
 @dataclass
@@ -59,41 +85,40 @@ class GeoObject:
         return d
 
 
-# Starting positions for different object types.
-# Each tuple is (lat, lon, region_label, country) — country matches the
-# actual real-world location so the UI's country field is consistent with
-# where the object actually is, instead of being assigned independently.
+# Starting positions for different object types (lat, lon, region_label).
+# Country is no longer stored here — it's derived live from actual position
+# via reverse geocoding, see refresh_countries() below.
 SHIP_STARTS = [
-    (37.7749, -122.4194, "Pacific Ocean", "USA"),        # San Francisco coast
-    (40.6892, -74.0445, "Atlantic Ocean", "USA"),        # New York harbor
-    (51.5074, -0.1278, "English Channel", "UK"),         # London area
-    (35.6762, 139.6503, "Pacific", "Japan"),              # Tokyo bay
-    (1.3521, 103.8198, "Singapore Strait", "Singapore"), # Singapore
-    (25.2048, 55.2708, "Persian Gulf", "UAE"),            # Dubai
-    (-33.8688, 151.2093, "Tasman Sea", "Australia"),      # Sydney
-    (48.8566, 2.3522, "Atlantic", "France"),              # Paris/Le Havre
+    (37.7749, -122.4194, "Pacific Ocean"),   # San Francisco coast
+    (40.6892, -74.0445, "Atlantic Ocean"),   # New York harbor
+    (51.5074, -0.1278, "English Channel"),   # London area
+    (35.6762, 139.6503, "Pacific"),          # Tokyo bay
+    (1.3521, 103.8198, "Singapore Strait"),  # Singapore
+    (25.2048, 55.2708, "Persian Gulf"),      # Dubai
+    (-33.8688, 151.2093, "Tasman Sea"),      # Sydney
+    (48.8566, 2.3522, "Atlantic"),           # Paris/Le Havre
 ]
 
 AIRCRAFT_STARTS = [
-    (40.7128, -74.0060, "North America", "USA"),
-    (51.5074, -0.1278, "Europe", "UK"),
-    (35.6762, 139.6503, "Asia Pacific", "Japan"),
-    (25.2048, 55.2708, "Middle East", "UAE"),
-    (-23.5505, -46.6333, "South America", "Brazil"),
-    (19.0760, 72.8777, "South Asia", "India"),
-    (55.7558, 37.6173, "Eastern Europe", "Russia"),
-    (30.0444, 31.2357, "North Africa", "Egypt"),
+    (40.7128, -74.0060, "North America"),
+    (51.5074, -0.1278, "Europe"),
+    (35.6762, 139.6503, "Asia Pacific"),
+    (25.2048, 55.2708, "Middle East"),
+    (-23.5505, -46.6333, "South America"),
+    (19.0760, 72.8777, "South Asia"),
+    (55.7558, 37.6173, "Eastern Europe"),
+    (30.0444, 31.2357, "North Africa"),
 ]
 
 VEHICLE_STARTS = [
-    (37.3861, -122.0839, "Silicon Valley", "USA"),
-    (40.7128, -74.0060, "New York", "USA"),
-    (51.5074, -0.1278, "London", "UK"),
-    (48.8566, 2.3522, "Paris", "France"),
-    (52.5200, 13.4050, "Berlin", "Germany"),
-    (35.6762, 139.6503, "Tokyo", "Japan"),
-    (28.6139, 77.2090, "Delhi", "India"),
-    (39.9042, 116.4074, "Beijing", "China"),
+    (37.3861, -122.0839, "Silicon Valley"),
+    (40.7128, -74.0060, "New York"),
+    (51.5074, -0.1278, "London"),
+    (48.8566, 2.3522, "Paris"),
+    (52.5200, 13.4050, "Berlin"),
+    (35.6762, 139.6503, "Tokyo"),
+    (28.6139, 77.2090, "Delhi"),
+    (39.9042, 116.4074, "Beijing"),
 ]
 
 SHIP_NAMES = [
@@ -172,14 +197,21 @@ def move_object(obj: GeoObject, dt: float = 1.0) -> GeoObject:
 class ObjectSimulator:
     """Manages a fleet of simulated geo objects."""
 
+    # How many update() ticks between reverse-geocoding passes. At 1 tick/sec
+    # (see main.py's broadcast loop), 5 means countries refresh every 5s —
+    # frequent enough to track objects crossing borders, infrequent enough
+    # to keep the synchronous geocode call from dominating tick time.
+    REGEOCODE_EVERY_N_TICKS = 5
+
     def __init__(self, n_ships: int = 15, n_aircraft: int = 10, n_vehicles: int = 10):
         self.objects: Dict[str, GeoObject] = {}
+        self._tick_count = 0
         self._create_objects(n_ships, n_aircraft, n_vehicles)
 
     def _create_objects(self, n_ships: int, n_aircraft: int, n_vehicles: int):
         # Ships
         for i in range(n_ships):
-            lat, lon, _, country = random.choice(SHIP_STARTS)
+            lat, lon, _ = random.choice(SHIP_STARTS)
             obj_id = str(uuid.uuid4())[:8]
             self.objects[obj_id] = GeoObject(
                 id=obj_id,
@@ -191,12 +223,12 @@ class ObjectSimulator:
                 speed=random.uniform(5, 20),
                 status=random_status(),
                 altitude=0,
-                country=country,
+                country="",  # filled in by refresh_countries() below
             )
 
         # Aircraft
         for i in range(n_aircraft):
-            lat, lon, _, country = random.choice(AIRCRAFT_STARTS)
+            lat, lon, _ = random.choice(AIRCRAFT_STARTS)
             obj_id = str(uuid.uuid4())[:8]
             self.objects[obj_id] = GeoObject(
                 id=obj_id,
@@ -208,12 +240,12 @@ class ObjectSimulator:
                 speed=random.uniform(400, 600),
                 status=random_status(),
                 altitude=random.uniform(10000, 45000),
-                country=country,
+                country="",  # filled in by refresh_countries() below
             )
 
         # Vehicles
         for i in range(n_vehicles):
-            lat, lon, _, country = random.choice(VEHICLE_STARTS)
+            lat, lon, _ = random.choice(VEHICLE_STARTS)
             obj_id = str(uuid.uuid4())[:8]
             self.objects[obj_id] = GeoObject(
                 id=obj_id,
@@ -225,8 +257,36 @@ class ObjectSimulator:
                 speed=random.uniform(30, 80),
                 status=random_status(),
                 altitude=0,
-                country=country,
+                country="",  # filled in by refresh_countries() below
             )
+
+        # Resolve every object's real country from its actual position.
+        self.refresh_countries()
+
+    def refresh_countries(self):
+        """Reverse-geocode every object's live position to its nearest country.
+
+        Uses the offline `reverse_geocoder` package — no network call or API
+        key required, since it ships a local index of ~40k populated places.
+
+        Known limitation: reverse_geocoder always returns the nearest
+        populated place, even over open ocean. A ship in the middle of the
+        Indian Ocean will be labeled with whatever coastal country/city is
+        geographically closest, not a maritime "no country" state. This is
+        an approximation, not authoritative maritime boundary data — but
+        it's a real improvement over a country picked independently of
+        position, since the label is now always geographically grounded.
+        """
+        objs = list(self.objects.values())
+        if not objs:
+            return
+        coords = [(o.lat, o.lon) for o in objs]
+        # mode=1 forces single-threaded lookup, which avoids multiprocessing
+        # start-up overhead — worth it for small batches like this (35
+        # objects), where that overhead would dominate the actual query cost.
+        results = rg.search(coords, mode=1)
+        for obj, res in zip(objs, results):
+            obj.country = _country_name(res["cc"])
 
     def update(self, dt: float = 1.0):
         """Move all objects and randomly change some statuses."""
@@ -235,6 +295,14 @@ class ObjectSimulator:
             # Randomly change status occasionally
             if random.random() < 0.01:
                 obj.status = random_status()
+
+        # Re-geocoding is synchronous CPU work (~50ms for 35 objects) that
+        # would block the asyncio event loop if run every tick. Country
+        # doesn't need per-second freshness the way position does, so we
+        # only refresh every REGEOCODE_EVERY_N_TICKS ticks instead.
+        self._tick_count += 1
+        if self._tick_count % self.REGEOCODE_EVERY_N_TICKS == 0:
+            self.refresh_countries()
 
     def get_all(self) -> List[dict]:
         return [obj.to_dict() for obj in self.objects.values()]
