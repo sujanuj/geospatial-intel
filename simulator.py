@@ -142,6 +142,19 @@ VEHICLE_NAMES = [
     "Convoy-Juliet-1", "Unit-Kilo-11", "Patrol-Lima-3",
 ]
 
+# How many simulated seconds of real-world motion happen per broadcast tick
+# (1 real second, per main.py's broadcast loop). At 1.0 this would be true
+# real-time, which is too slow to see on a live map — a 15-knot ship moves
+# about 7.7m/sec in reality. This is a deliberate visualization speed-up,
+# not a physics change: relative speed differences between ships, aircraft,
+# and vehicles are preserved exactly as they are in reality (aircraft really
+# do move ~30-50x faster than ships), unlike the old code's inconsistent
+# per-type multipliers, which distorted those ratios.
+SIM_SPEED_MULTIPLIER = 30
+
+KM_PER_DEGREE = 111.0  # approx, at the equator; longitude is corrected by cos(lat) below
+
+
 def random_status() -> ObjectStatus:
     r = random.random()
     if r < 0.7:
@@ -158,25 +171,28 @@ def move_object(obj: GeoObject, dt: float = 1.0) -> GeoObject:
     Uses simple flat-earth approximation for small distances.
     1 degree latitude ≈ 111km
     1 degree longitude ≈ 111km * cos(lat)
+
+    Speed-to-motion conversion: real speed -> real km/s -> real deg/s,
+    then scaled by SIM_SPEED_MULTIPLIER for visible demo movement. This
+    replaces an earlier version that divided by 111000 (meters per degree)
+    instead of 111 (km per degree) -- a 1000x unit error that made
+    real-world-correct speeds imperceptible on screen -- and that papered
+    over it with three different undocumented per-type multipliers instead
+    of fixing the underlying conversion.
     """
     # Slightly vary heading and speed for realistic movement
     obj.heading = (obj.heading + random.uniform(-2, 2)) % 360
     if obj.type == ObjectType.SHIP:
         obj.speed = max(2, min(25, obj.speed + random.uniform(-0.5, 0.5)))
-        speed_deg_per_sec = obj.speed * 0.000514 / 111000  # knots to deg/s
+        speed_km_per_sec = obj.speed * 0.000514  # knots -> km/s
     elif obj.type == ObjectType.AIRCRAFT:
         obj.speed = max(300, min(700, obj.speed + random.uniform(-5, 5)))
-        speed_deg_per_sec = obj.speed * 0.000277 / 111000  # knots to deg/s
-        # Scale up for visible movement in demo
-        speed_deg_per_sec *= 50
+        speed_km_per_sec = obj.speed * 0.000514  # knots -> km/s
     else:  # vehicle
         obj.speed = max(10, min(100, obj.speed + random.uniform(-2, 2)))
-        speed_deg_per_sec = obj.speed * 0.000447 / 111000  # mph to deg/s
-        speed_deg_per_sec *= 20
+        speed_km_per_sec = obj.speed * 0.000447  # mph -> km/s
 
-    # Scale ships for visible movement
-    if obj.type == ObjectType.SHIP:
-        speed_deg_per_sec *= 100
+    speed_deg_per_sec = (speed_km_per_sec / KM_PER_DEGREE) * SIM_SPEED_MULTIPLIER
 
     heading_rad = math.radians(obj.heading)
     dlat = speed_deg_per_sec * math.cos(heading_rad) * dt
