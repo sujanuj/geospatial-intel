@@ -54,6 +54,18 @@ uvicorn main:app --reload --port 8000
 
 Then open `http://localhost:8000`.
 
+### Running the tests
+
+```bash
+pip install pytest pytest-asyncio httpx
+python3 -m pytest tests/ -v
+```
+
+33 tests, covering `simulator.py`'s motion model, status distribution, and
+reverse-geocoding integration (`tests/test_simulator.py`), plus `main.py`'s
+REST endpoints and WebSocket behavior — including regression tests for the
+`connected_clients` `UnboundLocalError` bug below (`tests/test_main.py`).
+
 ---
 
 ## Development phases
@@ -69,6 +81,16 @@ app, WebSocket broadcast loop, REST endpoints), `frontend/index.html`
 Phase 1 ran and looked plausible on first glance, which is exactly when bugs
 hide best. Phase 2 was going through it critically and fixing what broke
 under scrutiny — see **Bugs found & fixed** below.
+
+### Phase 3 — Test suite and deprecation cleanup
+
+Added a 33-test `pytest` suite covering the correctness issues found in
+Phase 2, so they can't silently regress. Also replaced the deprecated
+`@app.on_event("startup")` handler with FastAPI's `lifespan` context
+manager — functionally identical, but it removed the last `DeprecationWarning`
+from the test run and gave the broadcast loop a clean, explicit shutdown
+path (`task.cancel()` + `await task`) instead of leaving it to die
+mid-iteration on process exit.
 
 ---
 
@@ -198,12 +220,16 @@ All measured directly from `simulator.py`, not estimated.
   expected ~10%) is within normal variance for 35 independent draws, not
   necessarily a bug — worth checking against a longer run before assuming
   the distribution is broken.
-- **No automated tests yet.** Every other project in this portfolio
-  (`lsmdb`, `llama-inference`, `rag-from-scratch`, `debug-agent`,
-  `minigrad`, `diffusion-model`) has a test suite; this one doesn't yet.
-  Development so far has been rapid iteration against real runtime output
-  (error tracebacks, screenshots) rather than a test-first phase — a gap
-  worth closing before calling this project "done."
+- **Tests share global state across a run, matching production design.**
+  `simulator` and `connected_clients` in `main.py` are module-level
+  singletons, not dependency-injected — same as the real running app. The
+  33-test `pytest` suite (`tests/`) inherits that: tests aren't fully
+  isolated from each other the way they'd be with a fresh app instance per
+  test, and tests that need a clean slate reset the relevant global
+  explicitly rather than getting isolation for free. This is a deliberate
+  fidelity tradeoff, not an oversight — but it does mean test order could
+  theoretically matter in ways it wouldn't with a properly injected
+  simulator instance.
 - **Single-process, in-memory state.** All 35 objects live in one Python
   process's memory. There's no persistence, no multi-instance broadcast
   fan-out (e.g. via Redis pub/sub), and restarting the server resets the
