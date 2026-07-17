@@ -15,6 +15,7 @@ push situational awareness updates to operators.
 import asyncio
 import json
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Set
 
@@ -24,15 +25,6 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
 from simulator import ObjectSimulator
-
-app = FastAPI(title="Geospatial Intelligence Platform")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 # Global simulator instance
 simulator = ObjectSimulator(n_ships=15, n_aircraft=10, n_vehicles=10)
@@ -67,9 +59,28 @@ async def broadcast_updates():
             connected_clients.difference_update(dead)
 
 
-@app.on_event("startup")
-async def startup():
-    asyncio.create_task(broadcast_updates())
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: kick off the background broadcast loop.
+    task = asyncio.create_task(broadcast_updates())
+    yield
+    # Shutdown: cancel the broadcast loop cleanly instead of letting it get
+    # killed mid-iteration when the process exits.
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
+app = FastAPI(title="Geospatial Intelligence Platform", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 # ---------------------------------------------------------------------------
