@@ -30,6 +30,9 @@ this project does *not* do — not a sanitized changelog.
   threat-count banner.
 - Exposes REST endpoints (`/api/objects`, `/api/objects/{id}`, `/api/stats`)
   for anything that doesn't need the live stream.
+- Supports a small query DSL for filtering objects by structured criteria
+  (`type:ship AND status:threat`) — over REST via `?q=`, and per-connection
+  on the live WebSocket stream. See **Development phases, Phase 4**.
 
 ## Stack
 
@@ -61,9 +64,11 @@ pip install pytest pytest-asyncio httpx
 python3 -m pytest tests/ -v
 ```
 
-33 tests, covering `simulator.py`'s motion model, status distribution, and
-reverse-geocoding integration (`tests/test_simulator.py`), plus `main.py`'s
-REST endpoints and WebSocket behavior — including regression tests for the
+83 tests, covering `simulator.py`'s motion model, status distribution, and
+reverse-geocoding integration (`tests/test_simulator.py`), the query DSL
+itself — tokenizing, operator precedence, every error path
+(`tests/test_query.py`) — plus `main.py`'s REST endpoints, WebSocket
+behavior, and query-filter integration, including regression tests for the
 `connected_clients` `UnboundLocalError` bug below (`tests/test_main.py`).
 
 ---
@@ -91,6 +96,43 @@ manager — functionally identical, but it removed the last `DeprecationWarning`
 from the test run and gave the broadcast loop a clean, explicit shutdown
 path (`task.cancel()` + `await task`) instead of leaving it to die
 mid-iteration on process exit.
+
+### Phase 4 — Query DSL over the object stream
+
+Added a small filter language, built from scratch (tokenizer +
+recursive-descent parser + evaluator, no parser library), so objects can be
+queried by structured criteria instead of only the fixed type/status toggle
+buttons:
+
+```
+type:ship AND status:threat
+country:Iran OR country:Iraq
+speed>500 AND type:aircraft
+NOT (status:active) AND altitude>30000
+name:"Ocean Pioneer"
+```
+
+`:` does a case-insensitive substring match on string fields (`type`,
+`status`, `country`, `name`, `id`); `=` and `!=` do exact match; numeric
+fields (`speed`, `altitude`, `heading`, `lat`, `lon`) additionally support
+`>`, `>=`, `<`, `<=`. `AND`/`OR`/`NOT` combine clauses with standard
+precedence (`NOT` binds tightest, then `AND`, then `OR`), and parentheses
+override it.
+
+Applies in two places:
+- **REST:** `GET /api/objects?q=<query>` — returns a 400 with a specific
+  error message (e.g. `unknown field 'bogus' — known fields are: ...`) on
+  a malformed query, not a generic 500.
+- **WebSocket, per connection:** sending `{"type": "filter", "query":
+  "..."}` narrows what *that specific connection* receives on every
+  subsequent broadcast tick — two clients can have two different active
+  filters at the same time. `{"type": "clear_filter"}` resets to the
+  unfiltered stream. The frontend's sidebar Query box drives this.
+
+40 additional tests in `tests/test_query.py` cover the DSL directly
+(tokenizing, operator precedence, every error path), and `tests/test_main.py`
+gained REST and WebSocket integration tests for the filtering behavior —
+83 tests total.
 
 ---
 
@@ -223,13 +265,23 @@ All measured directly from `simulator.py`, not estimated.
 - **Tests share global state across a run, matching production design.**
   `simulator` and `connected_clients` in `main.py` are module-level
   singletons, not dependency-injected — same as the real running app. The
-  33-test `pytest` suite (`tests/`) inherits that: tests aren't fully
-  isolated from each other the way they'd be with a fresh app instance per
-  test, and tests that need a clean slate reset the relevant global
-  explicitly rather than getting isolation for free. This is a deliberate
-  fidelity tradeoff, not an oversight — but it does mean test order could
-  theoretically matter in ways it wouldn't with a properly injected
-  simulator instance.
+  `pytest` suite (`tests/`) inherits that: tests aren't fully isolated from
+  each other the way they'd be with a fresh app instance per test, and
+  tests that need a clean slate reset the relevant global explicitly rather
+  than getting isolation for free. This is a deliberate fidelity tradeoff,
+  not an oversight — but it does mean test order could theoretically matter
+  in ways it wouldn't with a properly injected simulator instance.
+- **Per-client query filtering is O(clients) per broadcast tick.** Each
+  connection with an active filter gets its own `filter_objects()` call and
+  its own serialized JSON message every second, instead of one shared
+  broadcast. Fine at demo scale (a handful of connections); would need
+  batching or a smarter diffing strategy to stay cheap with many concurrent
+  filtered clients.
+- **The query DSL's `!=` doesn't compose intuitively with `:` on multi-value
+  fields.** `country!=Iran` excludes exact matches on "Iran" but a value
+  like `country:"North Korea"` still needs quoting for the multi-word case
+  — there's no negated-substring operator, so "doesn't contain" isn't
+  directly expressible, only "isn't exactly equal to."
 - **Single-process, in-memory state.** All 35 objects live in one Python
   process's memory. There's no persistence, no multi-instance broadcast
   fan-out (e.g. via Redis pub/sub), and restarting the server resets the
@@ -245,8 +297,14 @@ All measured directly from `simulator.py`, not estimated.
 geospatial-intel/
 ├── main.py              # FastAPI app, WebSocket broadcast loop, REST endpoints
 ├── simulator.py          # Object fleet, motion model, reverse geocoding
+├── query.py               # Query DSL: tokenizer, parser, evaluator
 ├── frontend/
-│   └── index.html        # Leaflet map UI (map, list, filters, detail panel)
+│   └── index.html        # Leaflet map UI (map, list, filters, query box, detail panel)
+├── tests/
+│   ├── test_simulator.py
+│   ├── test_query.py
+│   └── test_main.py
+├── pytest.ini
 ├── requirements.txt
 └── README.md
 ```
