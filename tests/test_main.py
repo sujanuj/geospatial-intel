@@ -64,6 +64,38 @@ class TestRestEndpoints:
         assert "GEO-INTEL" in resp.text or "geo-intel" in resp.text.lower()
 
 
+class TestRestQueryFiltering:
+    """GET /api/objects?q=<query> — see query.py for the DSL itself."""
+
+    def test_filters_by_type(self, client):
+        resp = client.get("/api/objects", params={"q": "type:ship"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["matched"] == len(body["objects"])
+        assert all(o["type"] == "ship" for o in body["objects"])
+        assert body["matched"] == 15  # simulator is configured with 15 ships
+
+    def test_filters_by_compound_query(self, client):
+        resp = client.get("/api/objects", params={"q": "type:aircraft AND speed>300"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert all(o["type"] == "aircraft" and o["speed"] > 300 for o in body["objects"])
+
+    def test_malformed_query_returns_400_with_message(self, client):
+        resp = client.get("/api/objects", params={"q": "bogus_field:value"})
+        assert resp.status_code == 400
+        assert "unknown field" in resp.json()["error"]
+
+    def test_no_query_param_returns_unfiltered_shape(self, client):
+        # response shape without ?q= should NOT include "matched"/"query" —
+        # confirms the two code paths (filtered vs unfiltered) stay distinct
+        resp = client.get("/api/objects")
+        body = resp.json()
+        assert "matched" not in body
+        assert "query" not in body
+        assert len(body["objects"]) == 35
+
+
 # ---------------------------------------------------------------------------
 # WebSocket
 # ---------------------------------------------------------------------------
@@ -92,6 +124,112 @@ class TestWebSocket:
         # after the `with` block exits, the client has disconnected;
         # connected_clients cleanup happens in the except block on the
         # server side, which we verify separately in TestBroadcastUpdates
+
+
+class TestWebSocketFiltering:
+    """The {"type": "filter", "query": "..."} / clear_filter messages and
+    their effect on connected_clients / client_filters bookkeeping."""
+
+    def test_filter_ack_on_valid_query(self, client):
+        with client.websocket_connect("/ws") as ws:
+            ws.receive_text()  # discard init
+            ws.send_text(json.dumps({"type": "filter", "query": "type:ship"}))
+            data = json.loads(ws.receive_text())
+            assert data["type"] == "filter_ack"
+            assert data["query"] == "type:ship"
+            assert data["matched"] == 15
+
+    def test_filter_error_on_malformed_query(self, client):
+        with client.websocket_connect("/ws") as ws:
+            ws.receive_text()  # discard init
+            ws.send_text(json.dumps({"type": "filter", "query": "bogus:field:oops"}))
+            data = json.loads(ws.receive_text())
+            assert data["type"] == "filter_error"
+            assert data["query"] == "bogus:field:oops"
+            assert "error" in data
+
+    def test_setting_filter_updates_client_filters_dict(self, client):
+        main.connected_clients.clear()
+        main.client_filters.clear()
+        with client.websocket_connect("/ws") as ws:
+            ws.receive_text()  # init
+            ws_obj = list(main.connected_clients)[0]
+            assert main.client_filters[ws_obj] is None  # no filter yet
+
+            ws.send_text(json.dumps({"type": "filter", "query": "type:aircraft"}))
+            ws.receive_text()  # filter_ack
+            assert main.client_filters[ws_obj] == "type:aircraft"
+
+    def test_clear_filter_resets_to_none(self, client):
+        main.connected_clients.clear()
+        main.client_filters.clear()
+        with client.websocket_connect("/ws") as ws:
+            ws.receive_text()  # init
+            ws_obj = list(main.connected_clients)[0]
+
+            ws.send_text(json.dumps({"type": "filter", "query": "type:ship"}))
+            ws.receive_text()  # filter_ack
+            assert main.client_filters[ws_obj] == "type:ship"
+
+            ws.send_text(json.dumps({"type": "clear_filter"}))
+            data = json.loads(ws.receive_text())
+            assert data["type"] == "filter_ack"
+            assert data["query"] is None
+            assert main.client_filters[ws_obj] is None
+
+    def test_invalid_filter_does_not_overwrite_previously_valid_one(self, client):
+        """A filter_error response shouldn't silently clear or corrupt a
+        filter that was already successfully applied."""
+        main.connected_clients.clear()
+        main.client_filters.clear()
+        with client.websocket_connect("/ws") as ws:
+            ws.receive_text()  # init
+            ws_obj = list(main.connected_clients)[0]
+
+            ws.send_text(json.dumps({"type": "filter", "query": "type:ship"}))
+            ws.receive_text()  # filter_ack
+            assert main.client_filters[ws_obj] == "type:ship"
+
+            ws.send_text(json.dumps({"type": "filter", "query": "not valid(("}))
+            data = json.loads(ws.receive_text())
+            assert data["type"] == "filter_error"
+            assert main.client_filters[ws_obj] == "type:ship"  # unchanged
+
+
+class TestBroadcastFiltering:
+    """broadcast_updates() actually applying per-client filters, using the
+    same FakeWebSocket approach as TestBroadcastUpdates."""
+
+    @pytest.mark.asyncio
+    async def test_filtered_client_receives_only_matching_objects(self):
+        main.connected_clients.clear()
+        main.client_filters.clear()
+        filtered_ws = FakeWebSocket(should_fail=False)
+        unfiltered_ws = FakeWebSocket(should_fail=False)
+        main.connected_clients.add(filtered_ws)
+        main.connected_clients.add(unfiltered_ws)
+        main.client_filters[filtered_ws] = "type:ship"
+        main.client_filters[unfiltered_ws] = None
+
+        task = asyncio.create_task(main.broadcast_updates())
+        await asyncio.sleep(1.2)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        assert len(filtered_ws.sent) == 1
+        assert len(unfiltered_ws.sent) == 1
+
+        filtered_msg = json.loads(filtered_ws.sent[0])
+        unfiltered_msg = json.loads(unfiltered_ws.sent[0])
+
+        assert all(o["type"] == "ship" for o in filtered_msg["objects"])
+        assert filtered_msg["matched"] == len(filtered_msg["objects"])
+        assert len(unfiltered_msg["objects"]) == 35  # unfiltered client sees everything
+
+        main.client_filters.clear()
 
 
 # ---------------------------------------------------------------------------
