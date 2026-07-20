@@ -109,12 +109,46 @@ class TestWebSocket:
             assert "stats" in data
             assert "timestamp" in data
 
-    def test_geofence_message_gets_ack(self, client):
+    def test_geofence_create_via_websocket(self, client):
+        main.geofence_manager.geofences.clear()
+        main.geofence_manager._containment.clear()
         with client.websocket_connect("/ws") as ws:
             ws.receive_text()  # discard init message
+            ws.send_text(json.dumps({
+                "type": "geofence", "action": "create",
+                "name": "Zone A", "lat": 25.0, "lon": 55.0, "radius_km": 100,
+            }))
+            data = json.loads(ws.receive_text())
+            assert data["type"] == "geofence_created"
+            assert data["geofence"]["name"] == "Zone A"
+
+    def test_geofence_create_with_invalid_params_errors(self, client):
+        with client.websocket_connect("/ws") as ws:
+            ws.receive_text()  # discard init
+            ws.send_text(json.dumps({
+                "type": "geofence", "action": "create",
+                "name": "", "lat": 25.0, "lon": 55.0, "radius_km": 100,
+            }))
+            data = json.loads(ws.receive_text())
+            assert data["type"] == "geofence_error"
+
+    def test_geofence_unknown_action_errors(self, client):
+        with client.websocket_connect("/ws") as ws:
+            ws.receive_text()  # discard init
+            ws.send_text(json.dumps({"type": "geofence", "action": "bogus"}))
+            data = json.loads(ws.receive_text())
+            assert data["type"] == "geofence_error"
+            assert "unknown geofence action" in data["error"]
+
+    def test_geofence_missing_action_errors(self, client):
+        """The pre-DSL stub used to ack any {"type": "geofence"} message
+        regardless of shape; now that geofences are a real feature, a
+        message with no action is a client error, not a silent no-op."""
+        with client.websocket_connect("/ws") as ws:
+            ws.receive_text()  # discard init
             ws.send_text(json.dumps({"type": "geofence", "bounds": [0, 0, 1, 1]}))
             data = json.loads(ws.receive_text())
-            assert data["type"] == "geofence_ack"
+            assert data["type"] == "geofence_error"
 
     def test_connecting_adds_to_connected_clients(self, client):
         main.connected_clients.clear()
@@ -316,3 +350,92 @@ class TestBroadcastUpdates:
         except asyncio.CancelledError:
             pass
         assert task.cancelled()
+
+
+class TestGeofenceRestEndpoints:
+    def setup_method(self):
+        main.geofence_manager.geofences.clear()
+        main.geofence_manager._containment.clear()
+
+    def test_create_geofence(self, client):
+        resp = client.post("/api/geofences", json={
+            "name": "Zone A", "lat": 25.0, "lon": 55.0, "radius_km": 100,
+        })
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["name"] == "Zone A"
+        assert "id" in body
+
+    def test_create_geofence_invalid_params_returns_400(self, client):
+        resp = client.post("/api/geofences", json={
+            "name": "Zone A", "lat": 999.0, "lon": 55.0, "radius_km": 100,
+        })
+        assert resp.status_code == 400
+        assert "error" in resp.json()
+
+    def test_list_geofences(self, client):
+        client.post("/api/geofences", json={
+            "name": "Zone A", "lat": 25.0, "lon": 55.0, "radius_km": 100,
+        })
+        resp = client.get("/api/geofences")
+        assert resp.status_code == 200
+        assert len(resp.json()["geofences"]) == 1
+
+    def test_delete_geofence(self, client):
+        created = client.post("/api/geofences", json={
+            "name": "Zone A", "lat": 25.0, "lon": 55.0, "radius_km": 100,
+        }).json()
+        resp = client.delete(f"/api/geofences/{created['id']}")
+        assert resp.status_code == 200
+        assert client.get("/api/geofences").json()["geofences"] == []
+
+    def test_delete_unknown_geofence_returns_404(self, client):
+        resp = client.delete("/api/geofences/does-not-exist")
+        assert resp.status_code == 404
+
+    def test_get_alerts_empty_initially(self, client):
+        main.alert_log.clear()
+        resp = client.get("/api/alerts")
+        assert resp.status_code == 200
+        assert resp.json()["alerts"] == []
+
+
+class TestGeofenceAlertsInBroadcast:
+    """Confirms geofence enter/exit alerts actually flow through the
+    broadcast loop into client messages, and into the alert log."""
+
+    @pytest.mark.asyncio
+    async def test_object_entering_geofence_produces_alert_in_broadcast(self):
+        main.geofence_manager.geofences.clear()
+        main.geofence_manager._containment.clear()
+        main.alert_log.clear()
+        main.connected_clients.clear()
+        main.client_filters.clear()
+
+        # Place the geofence directly on top of a real object's current
+        # position, so it's guaranteed to be "inside" on the very next tick.
+        target = main.simulator.get_all()[0]
+        main.geofence_manager.create(
+            "Test Zone", lat=target["lat"], lon=target["lon"], radius_km=5000
+        )
+
+        ws = FakeWebSocket(should_fail=False)
+        main.connected_clients.add(ws)
+        main.client_filters[ws] = None
+
+        task = asyncio.create_task(main.broadcast_updates())
+        await asyncio.sleep(1.2)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        assert len(ws.sent) == 1
+        msg = json.loads(ws.sent[0])
+        assert "alerts" in msg
+        assert len(msg["alerts"]) >= 1
+        assert msg["alerts"][0]["event"] == "enter"
+
+        assert len(main.alert_log) >= 1
+        assert main.alert_log[0]["event"] == "enter"

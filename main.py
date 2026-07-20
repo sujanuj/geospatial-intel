@@ -5,6 +5,10 @@ Endpoints:
   GET  /api/objects   -> get all objects (REST); accepts ?q=<query> to filter
   GET  /api/objects/{id} -> get single object
   GET  /api/stats     -> get fleet statistics
+  GET  /api/geofences -> list active geofences
+  POST /api/geofences -> create a geofence
+  DELETE /api/geofences/{id} -> remove a geofence
+  GET  /api/alerts    -> recent geofence enter/exit alerts (most recent first)
   WS   /ws            -> WebSocket for real-time position updates
 
 The WebSocket broadcasts all object positions every second to all
@@ -16,6 +20,12 @@ Objects can be filtered with a small query DSL (see query.py), e.g.
 query parameter, and per-connection on the WebSocket via a
 `{"type": "filter", "query": "..."}` message -- each connected client can
 have a different active filter at the same time.
+
+Geofences (see geofence.py) are circular zones that trigger an alert the
+moment an object enters or exits. Unlike query filters, geofences are
+global, not per-connection -- creating or deleting one broadcasts to every
+connected client, since a geofence represents a real zone of interest that
+everyone watching the map should see and be alerted about.
 """
 
 import asyncio
@@ -23,18 +33,30 @@ import json
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Dict, Optional, Set
+from typing import Dict, List, Optional, Set
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 from simulator import ObjectSimulator
 from query import QueryError, filter_objects
+from geofence import GeofenceError, GeofenceManager
 
 # Global simulator instance
 simulator = ObjectSimulator(n_ships=15, n_aircraft=10, n_vehicles=10)
+
+# Global geofence manager. Geofences are shared across all connections
+# (unlike query filters, which are per-connection) -- see module docstring.
+geofence_manager = GeofenceManager()
+
+# Rolling log of the most recent geofence alerts, newest first. Capped so
+# a long-running process doesn't grow this unboundedly; a real system
+# would persist these somewhere instead of keeping them only in memory.
+ALERT_LOG_MAX = 200
+alert_log: List[dict] = []
 
 # Track connected WebSocket clients
 connected_clients: Set[WebSocket] = set()
@@ -45,6 +67,13 @@ connected_clients: Set[WebSocket] = set()
 # every subsequent broadcast tick -- each client can have a different
 # filter active at the same time.
 client_filters: Dict[WebSocket, Optional[str]] = {}
+
+
+class GeofenceCreate(BaseModel):
+    name: str
+    lat: float
+    lon: float
+    radius_km: float
 
 
 # ---------------------------------------------------------------------------
@@ -60,15 +89,25 @@ async def broadcast_updates():
     object list; a client with a filter gets only the matching subset,
     computed fresh each tick since object state (position, status) changes
     every tick too.
+
+    Geofence alerts are computed once per tick against the *unfiltered*
+    object list (an object shouldn't need to match someone's personal
+    query filter to trigger a geofence alert -- the two features are
+    independent) and included in every client's message, filtered or not.
     """
     while True:
         await asyncio.sleep(1.0)
         simulator.update(dt=1.0)
 
+        all_objects = simulator.get_all()
+        new_alerts = geofence_manager.update(all_objects)
+        if new_alerts:
+            alert_log[:0] = reversed(new_alerts)  # newest first
+            del alert_log[ALERT_LOG_MAX:]
+
         if not connected_clients:
             continue
 
-        all_objects = simulator.get_all()
         stats = simulator.get_stats()
         timestamp = time.time()
 
@@ -79,6 +118,7 @@ async def broadcast_updates():
             "type": "update",
             "objects": all_objects,
             "stats": stats,
+            "alerts": new_alerts,
             "timestamp": timestamp,
         })
 
@@ -101,6 +141,7 @@ async def broadcast_updates():
                     "objects": matched,
                     "stats": stats,
                     "matched": len(matched),
+                    "alerts": new_alerts,
                     "timestamp": timestamp,
                 })
             else:
@@ -114,6 +155,25 @@ async def broadcast_updates():
         connected_clients.difference_update(dead)
         for ws in dead:
             client_filters.pop(ws, None)
+
+
+async def broadcast_to_all(message: dict):
+    """Send a message to every connected client immediately, outside the
+    normal per-tick loop. Used for geofence create/delete, since those are
+    global events every connected client should see right away, not wait
+    up to a second for."""
+    if not connected_clients:
+        return
+    text = json.dumps(message)
+    dead = set()
+    for ws in connected_clients:
+        try:
+            await ws.send_text(text)
+        except Exception:
+            dead.add(ws)
+    connected_clients.difference_update(dead)
+    for ws in dead:
+        client_filters.pop(ws, None)
 
 
 @asynccontextmanager
@@ -179,6 +239,42 @@ async def get_stats():
 
 
 # ---------------------------------------------------------------------------
+# Geofence endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/geofences")
+async def list_geofences():
+    return JSONResponse({"geofences": geofence_manager.list()})
+
+
+@app.post("/api/geofences")
+async def create_geofence(body: GeofenceCreate):
+    try:
+        gf = geofence_manager.create(body.name, body.lat, body.lon, body.radius_km)
+    except GeofenceError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    gf_dict = gf.to_dict()
+    # Every connected client should see the new zone immediately, not wait
+    # for the next broadcast tick.
+    await broadcast_to_all({"type": "geofence_created", "geofence": gf_dict})
+    return JSONResponse(gf_dict, status_code=201)
+
+
+@app.delete("/api/geofences/{geofence_id}")
+async def delete_geofence(geofence_id: str):
+    removed = geofence_manager.delete(geofence_id)
+    if not removed:
+        return JSONResponse({"error": "Geofence not found"}, status_code=404)
+    await broadcast_to_all({"type": "geofence_deleted", "id": geofence_id})
+    return JSONResponse({"deleted": geofence_id})
+
+
+@app.get("/api/alerts")
+async def get_alerts(limit: int = 50):
+    return JSONResponse({"alerts": alert_log[:limit], "total_logged": len(alert_log)})
+
+
+# ---------------------------------------------------------------------------
 # WebSocket endpoint
 # ---------------------------------------------------------------------------
 
@@ -193,6 +289,7 @@ async def websocket_endpoint(websocket: WebSocket):
         "type": "init",
         "objects": simulator.get_all(),
         "stats": simulator.get_stats(),
+        "geofences": geofence_manager.list(),
         "timestamp": time.time(),
     }))
 
@@ -203,12 +300,58 @@ async def websocket_endpoint(websocket: WebSocket):
             msg = json.loads(data)
             msg_type = msg.get("type")
 
-            # Handle geofence alerts
+            # Create, delete, or list geofences. Unlike query filters,
+            # geofences are global -- a successful create/delete is
+            # broadcast to every connected client via broadcast_to_all(),
+            # not just acked back to the requester.
             if msg_type == "geofence":
-                await websocket.send_text(json.dumps({
-                    "type": "geofence_ack",
-                    "message": "Geofence registered",
-                }))
+                action = msg.get("action")
+
+                if action == "create":
+                    try:
+                        gf = geofence_manager.create(
+                            msg.get("name", ""),
+                            float(msg.get("lat")),
+                            float(msg.get("lon")),
+                            float(msg.get("radius_km")),
+                        )
+                    except (GeofenceError, TypeError, ValueError) as e:
+                        await websocket.send_text(json.dumps({
+                            "type": "geofence_error",
+                            "error": str(e),
+                        }))
+                    else:
+                        await broadcast_to_all({
+                            "type": "geofence_created",
+                            "geofence": gf.to_dict(),
+                        })
+
+                elif action == "delete":
+                    geofence_id = msg.get("id", "")
+                    removed = geofence_manager.delete(geofence_id)
+                    if removed:
+                        await broadcast_to_all({
+                            "type": "geofence_deleted",
+                            "id": geofence_id,
+                        })
+                    else:
+                        await websocket.send_text(json.dumps({
+                            "type": "geofence_error",
+                            "error": f"geofence {geofence_id!r} not found",
+                        }))
+
+                elif action == "list":
+                    await websocket.send_text(json.dumps({
+                        "type": "geofence_list",
+                        "geofences": geofence_manager.list(),
+                    }))
+
+                else:
+                    await websocket.send_text(json.dumps({
+                        "type": "geofence_error",
+                        "error": f"unknown geofence action {action!r} -- "
+                                 "expected create, delete, or list",
+                    }))
 
             # Set (or clear, if query is empty/absent) this connection's
             # active filter. Validated immediately against the current

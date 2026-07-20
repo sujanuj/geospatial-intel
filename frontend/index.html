@@ -190,6 +190,172 @@
   #query-status.query-ok { color: #00ff88; }
   #query-status.query-error { color: #ff4444; }
 
+  /* Geofence */
+  #geofence-section {
+    padding: 12px 16px;
+    border-bottom: 1px solid #1a2332;
+  }
+
+  #geofence-section h3 {
+    font-size: 10px;
+    color: #4a5568;
+    letter-spacing: 2px;
+    margin-bottom: 8px;
+    text-transform: uppercase;
+  }
+
+  #geofence-draw-btn {
+    width: 100%;
+    padding: 6px 10px;
+    border: 1px solid #00ff88;
+    background: transparent;
+    color: #00ff88;
+    font-family: 'Courier New', monospace;
+    font-size: 10px;
+    letter-spacing: 1px;
+    cursor: pointer;
+    border-radius: 3px;
+    transition: all 0.2s;
+  }
+
+  #geofence-draw-btn:hover { background: #00ff8822; }
+  #geofence-draw-btn.drawing-active {
+    background: #00ff8822;
+    animation: pulse-border 1.2s infinite;
+  }
+
+  @keyframes pulse-border {
+    0%, 100% { border-color: #00ff88; }
+    50% { border-color: #00ff8877; }
+  }
+
+  .hidden { display: none; }
+
+  #geofence-draw-controls {
+    margin-top: 8px;
+    padding: 8px;
+    background: #0a0e1a;
+    border: 1px solid #1a2332;
+    border-radius: 4px;
+  }
+
+  #geofence-draw-hint {
+    font-size: 9px;
+    color: #ffaa00;
+    margin-bottom: 6px;
+    letter-spacing: 0.5px;
+  }
+
+  #geofence-name-input, #geofence-radius-input {
+    width: 100%;
+    background: #0a0e1a;
+    border: 1px solid #1a2332;
+    color: #00ff88;
+    font-family: 'Courier New', monospace;
+    font-size: 11px;
+    padding: 5px 8px;
+    border-radius: 3px;
+    outline: none;
+    margin-bottom: 6px;
+  }
+
+  #geofence-name-input:focus, #geofence-radius-input:focus { border-color: #00ff88; }
+
+  .geofence-radius-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 6px;
+  }
+
+  .geofence-radius-row label {
+    font-size: 9px;
+    color: #4a5568;
+    white-space: nowrap;
+  }
+
+  .geofence-radius-row input { margin-bottom: 0; width: 80px; }
+
+  #geofence-confirm-btn:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+  }
+
+  #geofence-list { margin-top: 8px; }
+
+  .geofence-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 5px 8px;
+    background: #0a0e1a;
+    border: 1px solid #1a2332;
+    border-radius: 3px;
+    margin-bottom: 4px;
+    font-size: 10px;
+  }
+
+  .geofence-item .geofence-item-name { color: #00ff88; }
+  .geofence-item .geofence-item-radius { color: #4a5568; margin-left: 4px; }
+
+  .geofence-item button {
+    background: transparent;
+    border: 1px solid #ff4444;
+    color: #ff4444;
+    font-family: 'Courier New', monospace;
+    font-size: 9px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    cursor: pointer;
+  }
+
+  .geofence-item button:hover { background: #ff444422; }
+
+  #geofence-status {
+    margin-top: 6px;
+    font-size: 10px;
+    min-height: 14px;
+  }
+
+  #geofence-status.geofence-ok { color: #00ff88; }
+  #geofence-status.geofence-error { color: #ff4444; }
+
+  /* Alert log */
+  #alert-log {
+    padding: 12px 16px;
+    border-bottom: 1px solid #1a2332;
+    max-height: 160px;
+    overflow-y: auto;
+  }
+
+  #alert-log h3 {
+    font-size: 10px;
+    color: #4a5568;
+    letter-spacing: 2px;
+    margin-bottom: 8px;
+    text-transform: uppercase;
+  }
+
+  .alert-log-empty {
+    font-size: 10px;
+    color: #4a5568;
+    font-style: italic;
+  }
+
+  .alert-log-entry {
+    font-size: 10px;
+    padding: 4px 0;
+    border-bottom: 1px solid #1a2332;
+    line-height: 1.4;
+  }
+
+  .alert-log-entry:last-child { border-bottom: none; }
+
+  .alert-log-entry .alert-enter { color: #ff4444; font-weight: bold; }
+  .alert-log-entry .alert-exit { color: #ffaa00; font-weight: bold; }
+  .alert-log-entry .alert-obj { color: #00ff88; }
+  .alert-log-entry .alert-zone { color: #4a5568; }
+
   /* Object list */
   #object-list {
     flex: 1;
@@ -395,6 +561,30 @@
       <div id="query-status"></div>
     </div>
 
+    <div id="geofence-section">
+      <h3>Geofence</h3>
+      <button id="geofence-draw-btn" onclick="toggleGeofenceDraw()">+ DRAW GEOFENCE</button>
+      <div id="geofence-draw-controls" class="hidden">
+        <div id="geofence-draw-hint">Click the map to place the center</div>
+        <input type="text" id="geofence-name-input" placeholder="Zone name" />
+        <div class="geofence-radius-row">
+          <label for="geofence-radius-input">Radius (km)</label>
+          <input type="number" id="geofence-radius-input" value="200" min="1" />
+        </div>
+        <div class="query-buttons">
+          <button id="geofence-confirm-btn" onclick="confirmGeofence()" disabled>CREATE</button>
+          <button id="geofence-cancel-btn" onclick="cancelGeofenceDraw()">CANCEL</button>
+        </div>
+      </div>
+      <div id="geofence-list"></div>
+      <div id="geofence-status"></div>
+    </div>
+
+    <div id="alert-log">
+      <h3>Recent Alerts</h3>
+      <div id="alert-log-list"><div class="alert-log-empty">No alerts yet</div></div>
+    </div>
+
     <div id="object-list"></div>
 
     <div id="detail-panel">
@@ -421,6 +611,13 @@ let filters = {
   ship: true, aircraft: true, vehicle: true,
   active: true, warning: true, threat: true,
 };
+
+// Geofence state
+let geofences = {};        // id -> {id, name, lat, lon, radius_km}
+let geofenceCircles = {};  // id -> Leaflet circle layer
+let geofenceDrawing = false;
+let geofenceDraftLatLon = null;
+let geofenceDraftMarker = null;
 
 // ---------------------------------------------------------------------------
 // Map setup (dark theme using CartoDB dark tiles)
@@ -623,6 +820,13 @@ function connect() {
       updateList(msg.objects);
       updateStats(msg.stats);
 
+      if (msg.type === 'init' && msg.geofences) {
+        msg.geofences.forEach(addGeofence);
+      }
+      if (msg.alerts && msg.alerts.length > 0) {
+        msg.alerts.forEach(logAlert);
+      }
+
       const now = new Date();
       document.getElementById('timestamp').textContent =
         `LAST UPDATE: ${now.toTimeString().slice(0,8)} UTC`;
@@ -635,6 +839,17 @@ function connect() {
     } else if (msg.type === 'filter_error') {
       const statusEl = document.getElementById('query-status');
       statusEl.className = 'query-error';
+      statusEl.textContent = msg.error;
+    } else if (msg.type === 'geofence_created') {
+      addGeofence(msg.geofence);
+      const statusEl = document.getElementById('geofence-status');
+      statusEl.className = 'geofence-ok';
+      statusEl.textContent = `"${msg.geofence.name}" created`;
+    } else if (msg.type === 'geofence_deleted') {
+      removeGeofence(msg.id);
+    } else if (msg.type === 'geofence_error') {
+      const statusEl = document.getElementById('geofence-status');
+      statusEl.className = 'geofence-error';
       statusEl.textContent = msg.error;
     }
   };
@@ -679,6 +894,154 @@ function clearQuery() {
   } else {
     statusEl.textContent = '';
   }
+}
+
+// ---------------------------------------------------------------------------
+// Geofence controls
+// ---------------------------------------------------------------------------
+function toggleGeofenceDraw() {
+  geofenceDrawing = !geofenceDrawing;
+  const btn = document.getElementById('geofence-draw-btn');
+  const controls = document.getElementById('geofence-draw-controls');
+
+  if (geofenceDrawing) {
+    btn.classList.add('drawing-active');
+    btn.textContent = 'CLICK MAP TO PLACE';
+    controls.classList.remove('hidden');
+  } else {
+    cancelGeofenceDraw();
+  }
+}
+
+function cancelGeofenceDraw() {
+  geofenceDrawing = false;
+  geofenceDraftLatLon = null;
+  const btn = document.getElementById('geofence-draw-btn');
+  btn.classList.remove('drawing-active');
+  btn.textContent = '+ DRAW GEOFENCE';
+  document.getElementById('geofence-draw-controls').classList.add('hidden');
+  document.getElementById('geofence-confirm-btn').disabled = true;
+  document.getElementById('geofence-draw-hint').textContent = 'Click the map to place the center';
+  if (geofenceDraftMarker) {
+    map.removeLayer(geofenceDraftMarker);
+    geofenceDraftMarker = null;
+  }
+}
+
+// Map click: only acts as "place geofence center" while in draw mode;
+// otherwise does nothing (object selection uses its own marker click
+// handlers, not a generic map click).
+map.on('click', (e) => {
+  if (!geofenceDrawing) return;
+
+  geofenceDraftLatLon = e.latlng;
+  document.getElementById('geofence-draw-hint').textContent =
+    `Center: ${e.latlng.lat.toFixed(2)}°, ${e.latlng.lng.toFixed(2)}°`;
+  document.getElementById('geofence-confirm-btn').disabled = false;
+
+  if (geofenceDraftMarker) map.removeLayer(geofenceDraftMarker);
+  geofenceDraftMarker = L.circleMarker(e.latlng, {
+    radius: 6, color: '#00ff88', fillColor: '#00ff88', fillOpacity: 0.6,
+  }).addTo(map);
+});
+
+function confirmGeofence() {
+  const statusEl = document.getElementById('geofence-status');
+  if (!geofenceDraftLatLon) {
+    statusEl.className = 'geofence-error';
+    statusEl.textContent = 'click the map to place a center first';
+    return;
+  }
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    statusEl.className = 'geofence-error';
+    statusEl.textContent = 'not connected';
+    return;
+  }
+
+  const name = document.getElementById('geofence-name-input').value.trim() || 'Unnamed Zone';
+  const radiusKm = parseFloat(document.getElementById('geofence-radius-input').value);
+
+  ws.send(JSON.stringify({
+    type: 'geofence',
+    action: 'create',
+    name,
+    lat: geofenceDraftLatLon.lat,
+    lon: geofenceDraftLatLon.lng,
+    radius_km: radiusKm,
+  }));
+
+  document.getElementById('geofence-name-input').value = '';
+  cancelGeofenceDraw();
+}
+
+function addGeofence(gf) {
+  geofences[gf.id] = gf;
+
+  if (geofenceCircles[gf.id]) map.removeLayer(geofenceCircles[gf.id]);
+  geofenceCircles[gf.id] = L.circle([gf.lat, gf.lon], {
+    radius: gf.radius_km * 1000,  // Leaflet circles use meters
+    color: '#00ff88',
+    weight: 2,
+    fillColor: '#00ff88',
+    fillOpacity: 0.08,
+    dashArray: '6, 6',
+  }).addTo(map);
+  geofenceCircles[gf.id].bindTooltip(gf.name, { permanent: false });
+
+  renderGeofenceList();
+}
+
+function removeGeofence(id) {
+  delete geofences[id];
+  if (geofenceCircles[id]) {
+    map.removeLayer(geofenceCircles[id]);
+    delete geofenceCircles[id];
+  }
+  renderGeofenceList();
+}
+
+function deleteGeofence(id) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({ type: 'geofence', action: 'delete', id }));
+}
+
+function renderGeofenceList() {
+  const listEl = document.getElementById('geofence-list');
+  const items = Object.values(geofences);
+  if (items.length === 0) {
+    listEl.innerHTML = '';
+    return;
+  }
+  listEl.innerHTML = items.map(gf => `
+    <div class="geofence-item">
+      <span><span class="geofence-item-name">${gf.name}</span><span class="geofence-item-radius">${gf.radius_km}km</span></span>
+      <button onclick="deleteGeofence('${gf.id}')">DELETE</button>
+    </div>
+  `).join('');
+}
+
+// ---------------------------------------------------------------------------
+// Alert log
+// ---------------------------------------------------------------------------
+const ALERT_LOG_DISPLAY_MAX = 20;
+let alertLogEntries = [];
+
+function logAlert(alert) {
+  alertLogEntries.unshift(alert);
+  alertLogEntries = alertLogEntries.slice(0, ALERT_LOG_DISPLAY_MAX);
+
+  const listEl = document.getElementById('alert-log-list');
+  listEl.innerHTML = alertLogEntries.map(a => {
+    const eventClass = a.event === 'enter' ? 'alert-enter' : 'alert-exit';
+    const eventLabel = a.event === 'enter' ? 'ENTERED' : 'EXITED';
+    return `
+      <div class="alert-log-entry">
+        <span class="alert-obj">${a.object_name}</span>
+        <span class="${eventClass}">${eventLabel}</span>
+        <span class="alert-zone">${a.geofence_name}</span>
+      </div>
+    `;
+  }).join('');
 }
 
 connect();
